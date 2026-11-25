@@ -1,0 +1,82 @@
+name: Bun CI
+
+concurrency:
+  group: bun-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+      MOON_CONCURRENCY: "2"
+      NODE_OPTIONS: --max-old-space-size=4096
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.3"
+
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev libfontconfig-dev libvulkan1 libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+
+      - name: Setup toolchain
+        uses: moonrepo/setup-toolchain@v0
+        with:
+          auto-install: true
+          auto-setup: true
+
+      - name: Install web and API dependencies
+        shell: bash
+        run: |
+          (cd apps/web && bun install --config=../../bunfig.toml --no-save)
+          (cd apps/api && bun install --config=../../bunfig.toml --no-save)
+
+      - name: Build the web app and API
+        # Run these targets on every CI invocation, including the first commit.
+        shell: bash
+        run: |
+          moon run --affected=false --base HEAD web:build
+          moon run --affected=false --base HEAD api:build -- --outdir=dist
+
+      - name: Run web unit tests when present
+        shell: bash
+        run: |
+          if [ -n "$(git ls-files -- ':(glob)apps/web/**/*.test.*' ':(glob)apps/web/**/*.spec.*')" ]; then
+            moon run --affected=false --base HEAD web:test
+          else
+            echo "No web test files in this snapshot."
+          fi
+
+      - name: Check the desktop app
+        run: cargo check --locked -p opencut-desktop
+
+      - name: Build the desktop app
+        run: cargo build --locked --release -p opencut-desktop
